@@ -1,0 +1,14 @@
+-- ============================================================
+-- 07 — Task Scheduling (real-time automation)
+-- ============================================================
+GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE SYSADMIN;
+
+CREATE OR REPLACE TASK OBM_DEV_OBM.INT.LOAD_ALL_CLEAN_TASK
+  WAREHOUSE = COMPUTE_WH
+  SCHEDULE = '1 MINUTE'
+WHEN
+  SYSTEM$STREAM_HAS_DATA('OBM_DEV_OBM.RAW.ORDERS_RAW_JSON_STREAM')
+AS
+CALL OBM_DEV_OBM.INT.LOAD_ALL_CLEAN();
+
+ALTER TASK OBM_DEV_OBM.INT.LOAD_ALL_CLEAN_TASK RESUME;
