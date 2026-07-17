@@ -10,6 +10,11 @@
 --   * ORDER_ITEMS matches on (order_id, item_id) composite key, since that's
 --     the real uniqueness at the line-item level.
 
+-- ============================================================
+-- 06 — LOAD_ALL_CLEAN() — PROD version
+-- Promoted from INT_DEV after successful testing: adds status
+-- validation (only COMPLETED / PENDING / CANCELLED are valid).
+-- ============================================================
 CREATE OR REPLACE PROCEDURE OBM_DEV_OBM.INT.LOAD_ALL_CLEAN()
 RETURNS STRING
 LANGUAGE SQL
@@ -23,19 +28,22 @@ BEGIN
     SELECT raw_data, METADATA$ACTION, METADATA$ISUPDATE
     FROM OBM_DEV_OBM.RAW.ORDERS_RAW_JSON_STREAM;
 
-    -- STEP B: ORDERS (MERGE)
+    -- STEP B: ORDERS (MERGE) — now with status validation
     MERGE INTO OBM_DEV_OBM.INT.ORDERS AS target
     USING (
         SELECT raw_data:order_id::INT AS order_id,
                raw_data:order_date::TIMESTAMP AS order_date,
                raw_data:status::STRING AS status,
                raw_data:customer:customer_id::INT AS customer_id,
-               metadata_action, metadata_isupdate
-        FROM OBM_DEV_OBM.RAW.ORDERS_BATCH_STAGING
+               metadata_action,
+               metadata_isupdate
+        FROM
+               OBM_DEV_OBM.RAW.ORDERS_BATCH_STAGING
         WHERE raw_data:order_id IS NOT NULL
           AND NOT IS_NULL_VALUE(raw_data:order_id)
           AND raw_data:customer:customer_id IS NOT NULL
           AND NOT IS_NULL_VALUE(raw_data:customer:customer_id)
+          AND raw_data:status::STRING IN ('COMPLETED','PENDING','CANCELLED')
     ) AS src
     ON target.order_id = src.order_id
     WHEN MATCHED AND src.metadata_action = 'DELETE' AND src.metadata_isupdate = FALSE THEN
@@ -91,13 +99,14 @@ BEGIN
         INSERT (order_id, item_id, product, qty, unit_price)
         VALUES (src.order_id, src.item_id, src.product, src.qty, src.unit_price);
 
-    -- STEP E: Rejected — order/customer level
+    -- STEP E: Rejected — order/customer level — now includes invalid status
     INSERT INTO OBM_DEV_OBM.RAW.REJECTED_RECORDS (source_table, raw_row, error_message)
     SELECT 'ORDERS_CUSTOMERS', raw_data,
         CASE
             WHEN raw_data:order_id IS NULL OR IS_NULL_VALUE(raw_data:order_id) THEN 'Missing order_id'
             WHEN raw_data:customer:customer_id IS NULL OR IS_NULL_VALUE(raw_data:customer:customer_id) THEN 'Missing customer_id'
             WHEN raw_data:customer:email IS NULL OR IS_NULL_VALUE(raw_data:customer:email) THEN 'Missing email'
+            WHEN raw_data:status::STRING NOT IN ('COMPLETED','PENDING','CANCELLED') THEN 'Invalid status value'
         END
     FROM OBM_DEV_OBM.RAW.ORDERS_BATCH_STAGING
     WHERE metadata_action != 'DELETE'
@@ -105,6 +114,7 @@ BEGIN
         raw_data:order_id IS NULL OR IS_NULL_VALUE(raw_data:order_id)
         OR raw_data:customer:customer_id IS NULL OR IS_NULL_VALUE(raw_data:customer:customer_id)
         OR raw_data:customer:email IS NULL OR IS_NULL_VALUE(raw_data:customer:email)
+        OR raw_data:status::STRING NOT IN ('COMPLETED','PENDING','CANCELLED')
       );
 
     -- STEP F: Rejected — item level
